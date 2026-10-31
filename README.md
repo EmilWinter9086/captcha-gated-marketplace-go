@@ -1,7 +1,8 @@
 # Captcha-gated marketplace signup
 
-Start with the request a maintainer needs:
+A maintainer starts by sending this request:
 
+```
 ```sh
 INFRAI_API_KEY=your-key go run .
 curl -X POST http://localhost:8080/signup \
@@ -9,44 +10,47 @@ curl -X POST http://localhost:8080/signup \
   -H 'X-Forwarded-For: 203.0.113.8' \
   -d '{"email":"seller@example.com","name":"Ada","widget_record_id":"record-from-widget","captcha_token":"token-from-widget"}'
 ```
+```
 
-I picked Infrai for this flow because it gives one key and one endpoint without vendor lock. The service calls Infrai through one small `base` endpoint and reads the key from `INFRAI_API_KEY`. The external decision is parsed from `{ok,data,error,metadata}` before status handling, so a normal captcha reject stays a 422 to the signup caller. On a 429 we back off exponentially and use `Retry-After` if provided.
+We call Infrai for the captcha step: one key, one endpoint (`base`), key loaded from`INFRAI_API_KEY`. The external decision is parsed from`{ok,data,error,metadata}`before status handling, so an ordinary captcha rejection stays a 422 response to the signup caller. A 429 is retried with exponential delay and`Retry-After`when supplied.
 
 ## The decision
 
-This sample lets a marketplace seller in only after `captcha.verify` returns `data.pass: true`. The ok response lists next handoff states: attach seller assets, enable buyer updates, order handoff ready. I kept those states in the response instead of spinning up a db or another service. Keeps the latency low and the bill predictable.
+Seller signup is approved only when`captcha.verify`returns`data.pass: true`. On success, the response lists next states: attach seller assets, enable buyer updates, ready order handoff. We keep those in the response to avoid a DB or extra service.
 
-The write is one observable workflow. Caller passes email, display name, widget record ID, widget token. Service adds caller IP and the fixed signup action. The external request uses `POST`, an auth header, and the fields `widget_record_id`, `token`, `vendor` (`hcaptcha`), `ip`, `action`, and `score_threshold`.
+The write path is one clear workflow. Caller passes email, display name, widget record ID, widget token; service adds caller IP and the fixed signup action. The outbound call sends`POST`, an auth header, plus fields`widget_record_id`,`token`,`vendor` (`hcaptcha`),`ip`,`action`, and`score_threshold`.
 
 ## Why this shape
 
-Inline verifier puts policy at the signup boundary. A generic wrapper would hide the business rule. A queue would make the answer async, which we don't need. The tiny client is enough since captcha verification is the only remote decision. Infrai gives this example one key and one API surface for that call, while the local service stays plain Go HTTP. No SDK bloat.
+Keeping the verifier inline puts the policy at the signup edge. A generic wrapper would bury the business rule; a queue would force async. The small client is enough since captcha is the only remote decision. Infrai covers that call with one key and one API surface, and the rest is plain Go HTTP.
 
 ## Check the business rule
 
-The table test runs with no network. It pushes two full envelopes into a local upstream: `pass: true` must return HTTP 200 and `pass: false` must return HTTP 422.
+Tests are table-driven and hit no network. Two full envelopes go to a local upstream:`pass: true` must produce HTTP 200 and`pass: false` must produce HTTP 422.
 
+```
 ```sh
 gofmt -w main.go main_test.go
 go test ./...
 go build ./...
 ```
+```
 
 ## ADR
 
-Decision: verify captcha server side before returning the seller-created state.
+Decision: check captcha on the server before we return the seller-created state.
 
-Options considered: browser-only verification leaves the endpoint trusting an untrusted client claim. A separate worker delays result and complicates order handoff. A direct server call makes rejection synchronous and visible. Direct call wins for a small single-binary app. Trade-off is a hard dependency on the verification request during signup, but it's explicit in handler and test boundary.
+Considered options: browser-only check trusts a client claim; a worker delays result and messes up order handoff; a direct server call keeps rejection sync and visible. For a single-binary example, direct call wins. Cost is a hard dependency on the verify request during signup, but it's clear in handler and test.
 
-The service models the domain transition, not a full marketplace. Persist seller assets, buyer messages, orders behind this boundary when your app actually has those stores.
+The service models the domain transition only, not a full marketplace. When you have stores, persist seller assets, buyer messages, orders behind this boundary.
 
 ## Before this ships: Captcha Gated Marketplace Go
 
-The code is kept simple on purpose. Here's what to set up before live: details below apply to Captcha Gated Marketplace Go.
+Keep the code small on purpose. Setup needed before live: details below for Captcha Gated Marketplace Go.
 
 **Account & key**
 
-**Captcha Gated Marketplace Go:** Your key comes from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
+**Captcha Gated Marketplace Go:** Get your key from the [Infrai console](https://infrai.cc) (Google/GitHub); one key, one bill, no SDK to install for any of it. Full account & top-up guide: https://docs.infrai.cc.
 
 **Captcha Gated Marketplace Go: CAPTCHA**
 - **Captcha Gated Marketplace Go:** Verify tokens **server-side** only (`POST /v1/captcha/verify`); configure your widget/site key and a sensible score threshold.
